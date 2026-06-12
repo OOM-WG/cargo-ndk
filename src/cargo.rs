@@ -363,6 +363,14 @@ pub(crate) fn run(
 
     append_target_args(&mut cargo_args, dir, cargo_manifest, triple);
 
+    let print_json_output = check_message_format(&cargo_args);
+
+    // If the user has not set a message format, we set it to json-render-diagnostics
+    if print_json_output == MessageFormat::NotSet {
+        cargo_args.push("--message-format".into());
+        cargo_args.push("json-render-diagnostics".into());
+    }
+
     cargo_cmd.args(&cargo_args);
 
     if !subcommand_args.is_empty() {
@@ -380,11 +388,15 @@ pub(crate) fn run(
     let mut artifacts = Vec::new();
 
     for msg in Message::parse_stream(reader) {
-        match msg? {
-            Message::CompilerArtifact(artifact) => artifacts.push(artifact),
-            Message::CompilerMessage(msg) => println!("{msg}"),
-            Message::TextLine(line) => println!("{line}"),
-            _ => {}
+        if print_json_output == MessageFormat::Json {
+            println!("{}", serde_json::to_string(&msg?).unwrap());
+        } else {
+            match msg? {
+                Message::CompilerArtifact(artifact) => artifacts.push(artifact),
+                Message::CompilerMessage(msg) => println!("{msg}"),
+                Message::TextLine(line) => println!("{line}"),
+                _ => {}
+            }
         }
     }
 
@@ -409,9 +421,56 @@ fn append_target_args(
 
     cargo_args.push("--target".into());
     cargo_args.push(triple.into());
+}
 
-    cargo_args.push("--message-format".into());
-    cargo_args.push("json-render-diagnostics".into());
+/// Check if the user has set a message format in the cargo arguments.
+///
+/// If the user has set a message format to json, return MessageFormat::Json.
+/// If the user has set a message format to something else, return MessageFormat::Other.
+/// If the user has not set a message format, return MessageFormat::NotSet.
+fn check_message_format(args: &[OsString]) -> MessageFormat {
+    let mut args_iter = args.iter();
+    while let Some(arg) = args_iter.next() {
+        let Some(arg_str) = arg.to_str() else {
+            continue;
+        };
+
+        if arg_str == "--message-format" {
+            return args_iter
+                .next()
+                .and_then(|next_arg| next_arg.to_str())
+                .map(MessageFormat::from_str)
+                .unwrap_or(MessageFormat::Other);
+        } else if let Some(value) = arg_str.strip_prefix("--message-format=") {
+            return MessageFormat::from_str(value);
+        }
+    }
+
+    MessageFormat::NotSet
+}
+
+/// The output format for cargo messages.
+#[derive(Debug, PartialEq)]
+pub enum MessageFormat {
+    /// JSON-output
+    Json,
+
+    /// Any other output format, set by user
+    Other,
+
+    /// Not set by user
+    NotSet,
+}
+
+impl MessageFormat {
+    pub fn from_str(value: &str) -> MessageFormat {
+        match value {
+            "json" | "json-diagnostic-short" | "json-diagnostic-rendered-ansi" => {
+                MessageFormat::Json
+            }
+            _ => MessageFormat::Other,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,8 +487,8 @@ mod tests {
     use crate::ARCH;
 
     use super::{
-        append_target_args, build_env, libclang_path, libclang_path_with_suffixes,
-        libclang_search_suffixes,
+        MessageFormat, append_target_args, build_env, check_message_format, libclang_path,
+        libclang_path_with_suffixes, libclang_search_suffixes,
     };
 
     fn temp_ndk_path(name: &str) -> PathBuf {
@@ -484,16 +543,7 @@ mod tests {
             "aarch64-linux-android",
         );
 
-        assert_eq!(
-            args,
-            vec![
-                "build",
-                "--target",
-                "aarch64-linux-android",
-                "--message-format",
-                "json-render-diagnostics",
-            ]
-        );
+        assert_eq!(args, vec!["build", "--target", "aarch64-linux-android"]);
     }
 
     #[test]
@@ -515,8 +565,6 @@ mod tests {
                 "/workspace/member/Cargo.toml",
                 "--target",
                 "aarch64-linux-android",
-                "--message-format",
-                "json-render-diagnostics",
             ]
         );
     }
@@ -596,5 +644,38 @@ mod tests {
         assert_eq!(PathBuf::from(env["LIBCLANG_PATH"].clone()), libclang_path);
 
         fs::remove_dir_all(ndk_home).ok();
+    }
+
+    #[test]
+    fn message_format_detects_separate_argument() {
+        let args = vec![
+            OsString::from("--message-format"),
+            OsString::from("json-render-diagnostics"),
+        ];
+        assert_eq!(check_message_format(&args), MessageFormat::Other);
+
+        let args = vec![OsString::from("--message-format"), OsString::from("human")];
+        assert_eq!(check_message_format(&args), MessageFormat::Other);
+    }
+
+    #[test]
+    fn message_format_detects_equals_argument() {
+        let args = vec![OsString::from("--message-format=json")];
+        assert_eq!(check_message_format(&args), MessageFormat::Json);
+
+        let args = vec![OsString::from("--message-format=json-diagnostic-short")];
+        assert_eq!(check_message_format(&args), MessageFormat::Json);
+
+        let args = vec![
+            OsString::from("--other-arg"),
+            OsString::from("--message-format=json"),
+        ];
+        assert_eq!(check_message_format(&args), MessageFormat::Json);
+    }
+
+    #[test]
+    fn message_format_detects_missing_argument() {
+        let args = vec![OsString::from("--other-arg")];
+        assert_eq!(check_message_format(&args), MessageFormat::NotSet);
     }
 }
