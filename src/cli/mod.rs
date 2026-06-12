@@ -689,20 +689,20 @@ pub fn run(args: Vec<String>) -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    // Determine the package being built so we only copy its artifacts.
-    let current_package_id = match metadata
-        .packages
-        .iter()
-        .find(|p| p.manifest_path.as_std_path() == cargo_manifest)
-    {
-        Some(p) => p.id.clone(),
-        None => {
-            shell.error("Could not determine current package from manifest")?;
-            std::process::exit(1);
-        }
-    };
-
     if let Some(output_dir) = args.output_dir.as_ref() {
+        // Determine the package being built so we only copy its artifacts.
+        let current_package_id = match metadata
+            .packages
+            .iter()
+            .find(|p| p.manifest_path.as_std_path() == cargo_manifest)
+        {
+            Some(p) => p.id.clone(),
+            None => {
+                shell.error("Could not determine current package from manifest")?;
+                std::process::exit(1);
+            }
+        };
+
         shell.concise(|shell| {
             shell.status(
                 "Copying",
